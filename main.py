@@ -93,6 +93,11 @@ for t in range(types):
 # Output files
 fp_trj = open('trj.gro','w')
 fp_E   = open('E.dat','w')
+if 'press_print' in CONF:
+    fp_P = open('P.dat','w')
+    fp_PHI = open('PHI.dat','w')
+
+
 
 #FUNCTION DEFINITIONS
 
@@ -129,8 +134,13 @@ def GEN_START_UNIFORM(r):
 
 def potential_transfer_function(k, v):
     return (v * np.exp(-0.5*CONF['sigma']**2*k.normp(p=2))**2)
+
 def phi_transfer_function(k, v):
     return v * np.exp(-0.5*CONF['sigma']**2*k.normp(p=2))
+
+def phi_lap_transfer_function(k, v):
+    return -v*k**2
+
 
 def INTEGERATE_POS(x, vel, a):
 # Velocity Verlet integration I
@@ -207,6 +217,48 @@ def COMP_FORCE(f, r, force_ds):
         for d in range(3):
             f[indicies[t], d] = force_ds[t][d].readout(r[indicies[t]], layout=layout[t])
 
+def WRITE_PRESSURE(fp_P,fp_PHI):
+    # This function computes the pressure of the simulation
+    
+    if 'chi' not in CONF:
+        P_iso= 0.5*CONF['dV']/(CONF['V']*CONF['phi0'])*(1./CONF['kappa']*(phi_t[0]-CONF['phi0'])**2 - v_pot[0]*phi_t[0])
+    else:
+        P_iso= W=CONF['dV']/(CONF['V']*CONF['phi0'])*(0.5/CONF['kappa']*(phi_t[0] + phi_t[1]-CONF['phi0'])**2 + CONF['chi']*phi_t[0]*phi_t[1]) - v_pot[0]*phi_t[0]+v_pot[1]*phi_t[1]
+            
+    for d in range(3):
+        kin_comp=0.5*CONF['mass']*pm.paint(r[indicies[k]], layout=layout[k],mass=vel[i,d]**2)/CONF['dV']
+        phi_lap=phi.copy()*0
+        for t in range(types):
+            def lap_transfer_function(k, v, d=d):
+                return -k[d]**2 * v*np.exp(-0.5*CONF['sigma']**2*k.normp(p=2))
+ 
+            phi_lap+=phi_fft[t].apply(lap_transfer_function).c2r(out=Ellipsis)
+                
+            # Pressure of single component
+        P_comp = P_iso + CONF['sigma']**2*phi_lap*v_pot+kin_comp
+        for z in range(CONF['Nv']):
+            for y in range(CONF['Nv']):
+                for x in range(CONF['Nv']):
+                    fp.write('%f '%(P_comp[x,y,z]))
+        fp_P.write('\n')
+    fp_P.write('\n')
+
+
+    # PRINT DENSITY OF PARTICLES                                    
+    for t in range(types):
+        for z in range(CONF['Nv']):
+            for y in range(CONF['Nv']):
+                for x in range(CONF['Nv']):
+                    fp_PHI.write('%f '%(phi_t[x,y,z]))
+          #      fp_PHI.write('\n')
+          #  fp_PHI.write('\n')
+                    
+         
+        fp_PHI.write('\n')
+    fp_PHI.write('\n')
+    return fp_P,fp_PHI
+
+
 def UPDATE_FIELD(comp_v_pot=False):
 
     for k in range(types):      
@@ -246,11 +298,11 @@ def COMPUTE_ENERGY():
     for k in range(types):
         phi_t[k]=phi[k].r2c(out=Ellipsis).apply(phi_transfer_function, out=Ellipsis).c2r(out=Ellipsis)
         
-    if types==2:
+    if types==2: 
         W=CONF['dV']/CONF['phi0']*np.sum(0.5/CONF['kappa']*(phi_t[0] + phi_t[1]-CONF['phi0'])**2 + CONF['chi']*phi_t[0]*phi_t[1])
     else:
         W = 0.5*CONF['dV']/CONF['phi0']*np.sum(1./CONF['kappa']*(phi_t[0]-CONF['phi0'])**2)
-    return E_hpf,E_kin,W
+    return E_hpf,E_kin,W 
     
 def ANDERSEN(vel):
     
@@ -381,6 +433,9 @@ for step in range(CONF['NSTEPS']):
         
         fp_trj=WRITE_TRJ_GRO(fp_trj, r, vel,CONF['dt']*step)
         fp_E.write("%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n"%(step*CONF['dt'],W+E_kin,W,E_kin,T,mom[0],mom[1],mom[2]))
+        if press_print in CONF:
+            fp_P,fp_PHI=PRESS_PRINT(fp_P,fp_PHI)
+
 
         fp_E.flush()
 
@@ -395,5 +450,7 @@ fp_E.write("%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\n"%(CONF['NSTEPS']*CONF['dt'],W+E_kin
  
 # Write last frame
 fp_trj=WRITE_TRJ_GRO(fp_trj, r, vel,CONF['dt']*CONF['NSTEPS'])
+if press_print in CONF:
+    fp_P,fp_PHI=PRESS_PRINT(fp_P,fp_PHI)
 
 np.savetxt('final.dat',np.hstack((r,vel,f_old)))
